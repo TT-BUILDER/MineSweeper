@@ -1,0 +1,569 @@
+<html>
+	<head>
+		<title>MineSweeper</title>
+	</head>
+	<body>
+		<canvas id ="main"></canvas>
+		<script>
+		// キャンバスとコンテキストの初期化
+		const canvas = document.getElementById('main');
+		const ctx = canvas.getContext('2d');
+		// 描画領域をクリアしているサイズ（900x900）に合わせてキャンバスサイズを設定
+		canvas.width = 600;
+		canvas.height = 500;
+
+		// ----------------------------------------------------
+		// Bit Arrow "g" ライブラリの疑似エミュレータ
+		// ----------------------------------------------------
+		const keys = {};
+		window.addEventListener('keydown', e => { keys[e.key.toUpperCase()] = 1; });
+		window.addEventListener('keyup', e => { keys[e.key.toUpperCase()] = 0; });
+
+		let currentPenX = 0;
+		let currentPenY = 0;
+
+		const g = {
+		    setColor: (r, green, b) => {
+		        const colorStr = `rgb(${Math.floor(r)}, ${Math.floor(green)}, ${Math.floor(b)})`;
+		        ctx.fillStyle = colorStr;
+		        ctx.strokeStyle = colorStr;
+		    },
+		    fillRect: (x, y, w, h) => {
+		        ctx.fillRect(x, y, w, h);
+		    },
+		    drawText: (string, x, y) => {
+		        ctx.textBaseline = "top";
+		        ctx.fillText(string, x, y);
+		    },
+		    drawNumber: (number, x, y) => {
+		        ctx.textBaseline = "top";
+		        ctx.fillText(number.toString(), x, y);
+		    },
+		    setPen: (x, y) => {
+		        currentPenX = x;
+		        currentPenY = y;
+		        ctx.beginPath();
+		        ctx.moveTo(x, y);
+		    },
+		    movePen: (dx, dy) => {
+		        currentPenX += dx;
+		        currentPenY += dy;
+		        ctx.lineTo(currentPenX, currentPenY);
+		        ctx.stroke();
+		    },
+		    setTimeout: (f, msec) => {
+		        setTimeout(f, msec);
+		    },
+		    getkey: (k) => {
+		        return keys[k] ? 1 : 0;
+		    },
+		    clear: () => {
+		        ctx.clearRect(0, 0, canvas.width, canvas.height);
+		    },
+		    setLineWidth: (w) => {
+		        ctx.lineWidth = w;
+		    },
+		    setTextSize: (sz) => {
+		        ctx.font = `${sz}px sans-serif`;
+		    }
+		};
+
+		// ----------------------------------------------------
+		// マインスイーパー ゲームロジック
+		// ----------------------------------------------------
+		let TILESIZE = 32;
+		let txtBase = TILESIZE;
+		let baseMult = 1;
+		let baseY = 64;
+
+		class KeyList {
+		    constructor() {
+		        const initKeys = () => ({
+		            "W":0, "A":0, "S":0, "D":0, "R":0, "N":0, "M":0, 
+		            "Q":0, "E":0, "Z":0, "8":0, "4":0, "2":0, "6":0
+		        });
+		        this.keyIn = initKeys();
+		        this.keyLast = initKeys();
+		        this.keyL = initKeys();
+		    }
+		    
+		    reloadKey() {
+		        const keyNames = ["W", "A", "S", "D", "R", "N", "M", "Q", "E", "Z", "8", "4", "2", "6"];
+		        for (let k of keyNames) {
+		            this.keyLast[k] = this.keyIn[k];
+		            this.keyIn[k] = g.getkey(k);
+		            this.keyL[k] = (this.keyIn[k] === 1 && this.keyLast[k] === 0) ? 1 : 0;
+		        }
+		    }
+		}
+
+		let key = new KeyList();
+		let Debug = 0;
+
+		function setSize(size) {
+		    TILESIZE = size * baseMult;
+		    g.setTextSize(TILESIZE);
+		    g.setLineWidth(TILESIZE / 8);
+		}
+
+		function textSize(size) {
+		    if (size === 0) {
+		        g.setTextSize(TILESIZE);
+		        txtBase = TILESIZE;
+		    } else {
+		        g.setTextSize(size);
+		        txtBase = size;
+		    }
+		}
+
+		const difTxtList = [
+		    "PRACTICING",
+		    "EASY",
+		    "NORMAL",
+		    "HARD"
+		];
+
+		const difTxtListJP = [
+		    "練習モード",
+		    "簡単",
+		    "普通",
+		    "難しい"
+		];
+
+		const difList = [
+		    [10, 6, 53],
+		    [16, 8, 40],
+		    [40, 14, 23],
+		    [99, 18, 18]
+		];
+
+		const TList = [" ", "1", "2", "3", "4", "5", "6", "7", "8", "#", "!"];
+
+		let difficulty = 0;
+		let maxTile = difList[difficulty][1];
+		let maxBomb = difList[difficulty][0];
+		setSize(difList[difficulty][2]);
+
+		let mapTile = [];
+		let numMapTile = [];
+		let bombMapTile = [];
+		let maskMapTile = [];
+
+		let posX = 0;
+		let posY = 0;
+
+		let first = 1;
+		let gameOverF = 0;
+		let gameClearF = 0;
+		let frameC = 0;
+		let mineRemain = 0;
+		let time = 0;
+		let depth = 0;
+		let JP = 1;
+
+		function searchList(Target, List) {
+		    for (let i = 0; i < List.length; i++) {
+		        if (List[i][0] === Target[0] && List[i][1] === Target[1]) {
+		            return 1;
+		        }
+		    }
+		    return 0;
+		}
+
+		function renderBox(px, py, sx, sy) {
+		    g.setColor(240, 128, 0);
+		    g.setPen(px, py);
+		    g.movePen(sx, 0);
+		    g.movePen(0, sy);
+		    g.movePen(-sx, 0);
+		    g.movePen(0, -sy);
+		}
+
+		function initTile() {
+		    mapTile = [];
+		    numMapTile = [];
+		    bombMapTile = [];
+		    maskMapTile = [];
+		    for (let iy = 0; iy < maxTile; iy++) {
+		        let zrown = [], zrowb = [], zrowm = [], orow = [], orowm = [];
+		        for (let ix = 0; ix < maxTile; ix++) {
+		            zrown.push(0); zrowb.push(0); zrowm.push(0);
+		            orow.push(1); orowm.push(1);
+		        }
+		        mapTile.push(orow);
+		        numMapTile.push(zrown);
+		        bombMapTile.push(zrowb);
+		        maskMapTile.push(orowm);
+		    }
+		}
+
+		function setC(num, tx, ty) {
+		    let adc = ((tx + ty) % 2) * 8;
+		    if (num === 0) {
+		        g.setColor(128 - adc, 128 - adc, 64 - adc);
+		    } else if (num === 1) {
+		        g.setColor(16 - adc, 128 - adc, 32 - adc);
+		    }
+		}
+
+		function setBC(num) {
+		    let col = [];
+		    if (num === 0) col = [255, 255, 255];
+		    else if (num === 1) col = [0, 128, 255];
+		    else if (num === 2) col = [64, 255, 16];
+		    else if (num === 3) col = [224, 208, 0];
+		    else if (num === 4) col = [96, 16, 240];
+		    else if (num === 5) col = [208, 128, 0];
+		    else if (num === 6) col = [255, 32, 255];
+		    else if (num === 10) col = [224, 16, 16];
+		    else col = [0, 0, 0];
+		    g.setColor(col[0], col[1], col[2]);
+		}
+
+		function renderTile() {
+		    for (let iy = 0; iy < maxTile; iy++) {
+		        for (let ix = 0; ix < maxTile; ix++) {
+		            setC(mapTile[iy][ix], ix, iy);
+		            g.fillRect(ix * TILESIZE, baseY + iy * TILESIZE, TILESIZE, TILESIZE);
+		        }
+		    }
+		}
+
+		function renderBomb() {
+		    let x = 6, y = -3;
+		    for (let iy = 0; iy < maxTile; iy++) {
+		        for (let ix = 0; ix < maxTile; ix++) {
+		            if (gameOverF && bombMapTile[iy][ix]) {
+		                g.setColor(255, 0, 0);
+		                g.fillRect(ix * TILESIZE, baseY + iy * TILESIZE, TILESIZE, TILESIZE);
+		            }
+		        }
+		    }
+		}
+
+		function renderNumber() {
+		    textSize(0);
+		    let x = 4, y = -3;
+		    for (let iy = 0; iy < maxTile; iy++) {
+		        for (let ix = 0; ix < maxTile; ix++) {
+		            if (numMapTile[iy][ix] !== 10) {
+		                if (maskMapTile[iy][ix] === 0 || Debug) {
+		                    setBC(numMapTile[iy][ix]);
+		                    g.drawText(TList[numMapTile[iy][ix]], x + (ix * TILESIZE), baseY + y + (iy * TILESIZE));
+		                }
+		            } else {
+		                setBC(numMapTile[iy][ix]);
+		                g.drawText(TList[numMapTile[iy][ix]], x + (ix * TILESIZE), baseY + y + (iy * TILESIZE));
+		            }
+		        }
+		    }
+		}
+
+		function setBomb() {
+		    let tempPosL = [];
+		    let li = 0;
+		    let DLC = 0;
+		    while (li < maxBomb) {
+		        let tempPosX = Math.floor(Math.random() * maxTile);
+		        let tempPosY = Math.floor(Math.random() * maxTile);
+		        let tempPos = [tempPosX, tempPosY];
+		        
+		        if (!searchList(tempPos, tempPosL)) {
+		            tempPosL.push(tempPos);
+		            li += 1;
+		        }
+		        if (DLC > 500) {
+		            console.log("TimeOut! bomb counter:" + maxBomb + " now:" + li);
+		            break;
+		        }
+		        DLC += 1;
+		    }
+		    for (let i = 0; i < tempPosL.length; i++) {
+		        let pos = tempPosL[i];
+		        numMapTile[pos[1]][pos[0]] = 1;
+		        bombMapTile[pos[1]][pos[0]] = 1;
+		    }
+		}
+
+		function isBomb(tx, ty) {
+		    if (tx < 0 || tx >= maxTile || ty < 0 || ty >= maxTile) {
+		        return [0, 0];
+		    } else {
+		        return [bombMapTile[ty][tx], 1];
+		    }
+		}
+
+		function giveMeNum(tx, ty) {
+		    let sumB = 0;
+		    sumB += isBomb(tx - 1, ty - 1)[0];
+		    sumB += isBomb(tx, ty - 1)[0];
+		    sumB += isBomb(tx + 1, ty - 1)[0];
+		    sumB += isBomb(tx - 1, ty)[0];
+		    sumB += isBomb(tx + 1, ty)[0];
+		    sumB += isBomb(tx - 1, ty + 1)[0];
+		    sumB += isBomb(tx, ty + 1)[0];
+		    sumB += isBomb(tx + 1, ty + 1)[0];
+		    return sumB;
+		}
+
+		function setNumber() {
+		    for (let iy = 0; iy < maxTile; iy++) {
+		        for (let ix = 0; ix < maxTile; ix++) {
+		            if (isBomb(ix, iy)[0]) {
+		                numMapTile[iy][ix] = 9;
+		            } else {
+		                numMapTile[iy][ix] = giveMeNum(ix, iy);
+		            }
+		        }
+		    }
+		}
+
+		function changeStage(dif) {
+		    difficulty = dif;
+		    maxTile = difList[dif][1];
+		    maxBomb = difList[dif][0];
+		    setSize(difList[dif][2]);
+		    
+		    initTile();
+		    setBomb();
+		    setNumber();
+		    
+		    gameOverF = 0;
+		    frameC = 0;
+		    mineRemain = maxBomb;
+		    time = 0;
+		    first = 1;
+		}
+
+		function openCell(tx, ty, openedCell) {
+		    depth += 1;
+		    if (depth > 400) {
+		        depth -= 1;
+		        return openedCell;
+		    }
+		    if (tx < 0 || tx >= maxTile || ty < 0 || ty >= maxTile) {
+		        depth -= 1;
+		        return openedCell;
+		    }
+		    if (searchList([tx, ty], openedCell)) {
+		        depth -= 1;
+		        return openedCell;
+		    }
+		    
+		    if (numMapTile[ty][tx] < 10) {
+		        maskMapTile[ty][tx] = 0;
+		        mapTile[ty][tx] = 0;
+		        if (isBomb(tx, ty)[0] && first === 0) {
+		            gameOverF = 1;
+		        }
+		    }
+		    openedCell.push([tx, ty]);
+		    
+		    if (numMapTile[ty][tx] === 0) {
+		        openCell(tx - 1, ty - 1, openedCell);
+		        openCell(tx, ty - 1, openedCell);
+		        openCell(tx + 1, ty - 1, openedCell);
+		        openCell(tx - 1, ty, openedCell);
+		        openCell(tx + 1, ty, openedCell);
+		        openCell(tx - 1, ty + 1, openedCell);
+		        openCell(tx, ty + 1, openedCell);
+		        openCell(tx + 1, ty + 1, openedCell);
+		    }
+		    depth -= 1;
+		    return openedCell;
+		}
+
+		function putFlag(tx, ty) {
+		    if (numMapTile[ty][tx] !== 10 && maskMapTile[ty][tx] === 1) {
+		        numMapTile[ty][tx] = 10;
+		        mineRemain -= 1;
+		    } else if (numMapTile[ty][tx] === 10) {
+		        numMapTile[ty][tx] = giveMeNum(tx, ty);
+		        mineRemain += 1;
+		    }
+		}
+
+		function renderUI() {
+		    let offX = 80, offY = 0;
+		    g.setColor(160, 160, 160);
+		    textSize(16);
+		    
+		    if (JP) {
+		        g.drawText("爆弾 :", offX + 0, offY + txtBase);
+		        g.drawText("時間 :", offX + txtBase * 5, offY + txtBase);
+		        g.drawText("難易度 :" + difTxtListJP[difficulty], offX + 0, offY + txtBase * 2);
+		        g.drawText(" ~操作方法~", maxTile * TILESIZE, baseY + txtBase * 0.8);
+		        g.drawText(" WASD ... カーソルの移動", maxTile * TILESIZE, baseY + txtBase * 2);
+		        g.drawText(" N ... 旗を設置", maxTile * TILESIZE, baseY + txtBase * 3.2);
+		        g.drawText(" M ... マスを掘る", maxTile * TILESIZE, baseY + txtBase * 4.4);
+		        g.drawText(" Q ... 難易度を上げる", maxTile * TILESIZE, baseY + txtBase * 5.6);
+		        g.drawText(" E ... 難易度を下げる", maxTile * TILESIZE, baseY + txtBase * 6.8);
+		        g.drawText(" R ... リセット", maxTile * TILESIZE, baseY + txtBase * 8);
+		        if (Debug) {
+		            g.drawText("Dev_Mode : Enable", offX + txtBase * 12, offY + txtBase * 2);
+		            g.drawText(" Z ... Disable Dev_Mode", maxTile * TILESIZE, baseY + txtBase * 13);
+		        } else {
+		            g.drawText(" Z ... Enable Dev_Mode", maxTile * TILESIZE, baseY + txtBase * 13);
+		            g.drawText("    (not recomended)", maxTile * TILESIZE, baseY + txtBase * 14.2);
+		        }
+		    } else {
+		        g.drawText("Mine :", offX + 0, offY + txtBase);
+		        g.drawText("Time :", offX + txtBase * 5, offY + txtBase);
+		        g.drawText("Difficulty :" + difTxtList[difficulty], offX + 0, offY + txtBase * 2);
+		        g.drawText(" ~How to play~", maxTile * TILESIZE, baseY + txtBase * 0.8);
+		        g.drawText(" WASD ... Move cursor", maxTile * TILESIZE, baseY + txtBase * 2);
+		        g.drawText(" N ... Put Flag", maxTile * TILESIZE, baseY + txtBase * 3.2);
+		        g.drawText(" M ... Mine the Cell", maxTile * TILESIZE, baseY + txtBase * 4.4);
+		        g.drawText(" Q ... makes game", maxTile * TILESIZE, baseY + txtBase * 5.6);
+		        g.drawText("        more DIFFICULT", maxTile * TILESIZE, baseY + txtBase * 6.8);
+		        g.drawText(" E ... makes game", maxTile * TILESIZE, baseY + txtBase * 8);
+		        g.drawText("        more EASIER", maxTile * TILESIZE, baseY + txtBase * 9.2);
+		        g.drawText(" R ... Stage Reset", maxTile * TILESIZE, baseY + txtBase * 10.4);
+		        if (Debug) {
+		            g.drawText("Dev_Mode : Enable", offX + txtBase * 12, offY + txtBase * 2);
+		            g.drawText(" Z ... Disable Dev_Mode", maxTile * TILESIZE, baseY + txtBase * 13);
+		        } else {
+		            g.drawText(" Z ... Enable Dev_Mode", maxTile * TILESIZE, baseY + txtBase * 13);
+		            g.drawText("    (not recomended)", maxTile * TILESIZE, baseY + txtBase * 14.2);
+		        }
+		    }
+		    
+		    g.drawNumber(mineRemain, offX + txtBase * 3, offY + txtBase);
+		    
+		    let MIN = Math.floor(time / 60);
+		    if (MIN >= 100) MIN = 99;
+		    
+		    let SEC;
+		    if (MIN >= 99 && time - (MIN * 60) > 60) {
+		        SEC = time - (MIN * 60);
+		    } else {
+		        SEC = time % 60;
+		    }
+		    
+		    MIN = MIN.toString();
+		    SEC = SEC.toString();
+		    
+		    if (MIN.length === 1) MIN = "0" + MIN;
+		    if (SEC.length === 1) SEC = "0" + SEC;
+		    
+		    g.drawText(MIN + ":" + SEC, offX + txtBase * 8, offY + txtBase);
+		}
+
+		function searchOpenedCell() {
+		    let sumOPC = 0;
+		    for (let i = 0; i < maskMapTile.length; i++) {
+		        for (let j = 0; j < maskMapTile[i].length; j++) {
+		            if (maskMapTile[i][j] === 0) {
+		                sumOPC += 1;
+		            }
+		        }
+		    }
+		    return sumOPC;
+		}
+
+		function checkBombMask() {
+		    for (let iy = 0; iy < maxTile; iy++) {
+		        for (let ix = 0; ix < maxTile; ix++) {
+		            if (bombMapTile[iy][ix] !== maskMapTile[iy][ix]) {
+		                return 0;
+		            }
+		        }
+		    }
+		    console.log("MATCH!");
+		    return 1;
+		}
+
+		function main() {
+		    key.reloadKey();
+		    
+		    g.clear();
+		    g.setColor(0, 0, 0);
+		    g.fillRect(0, 0, 900, 900);
+		    
+		    renderTile();
+		    renderBomb();
+		    renderNumber();
+		    renderBox(posX * TILESIZE, baseY + posY * TILESIZE, TILESIZE, TILESIZE);
+		    renderUI();
+		    
+		    if (key.keyL["R"]) {
+		        changeStage(difficulty);
+		    }
+		    
+		    if (gameOverF) {
+		        textSize(48);
+		        g.setColor(128, 32, 128);
+		        g.drawText("GAME OVER", (maxTile * TILESIZE) / 4, maxTile * TILESIZE / 2);
+		        if (JP) {
+		            g.setColor(255, 255, 255);
+		            g.drawText("Rキーでリトライ", (maxTile * TILESIZE) / 10, txtBase + maxTile * TILESIZE / 2);
+		        } else {
+		            g.setColor(255, 255, 255);
+		            g.drawText("Press 'R' to Retry", (maxTile * TILESIZE) / 16, txtBase + maxTile * TILESIZE / 2);
+		        }
+		    } else if (gameClearF) {
+		        textSize(48);
+		        g.setColor(255, 255, 128);
+		        g.drawText("GAME CLEAR", (maxTile * TILESIZE) / 4.5, maxTile * TILESIZE / 2);
+		        if (JP) {
+		            g.setColor(255, 255, 0);
+		            g.drawText("Rキーでリセット", (maxTile * TILESIZE) / 10, txtBase + maxTile * TILESIZE / 2);
+		        } else {
+		            g.setColor(255, 255, 0);
+		            g.drawText("Press 'R' to Reset", (maxTile * TILESIZE) / 16, txtBase + maxTile * TILESIZE / 2);
+		        }
+		    } else {
+		        if (first === 0) {
+		            if (frameC > 53) {
+		                frameC = 0;
+		                if (time < 6039) {
+		                    time += 1;
+		                }
+		            } else {
+		                frameC += 1;
+		            }
+		        }
+		        if (key.keyL["W"] || key.keyL["8"]) {
+		            posY -= 1;
+		        } else if (key.keyL["A"] || key.keyL["4"]) {
+		            posX -= 1;
+		        } else if (key.keyL["S"] || key.keyL["2"]) {
+		            posY += 1;
+		        } else if (key.keyL["D"] || key.keyL["6"]) {
+		            posX += 1;
+		        } else if (key.keyL["M"]) {
+		            if (first === 1) {
+		                while (numMapTile[posY][posX] !== 0 && searchOpenedCell() < 20) {
+		                    changeStage(difficulty);
+		                }
+		                first = 0;
+		                openCell(posX, posY, []);
+		                depth = 0;
+		            } else {
+		                openCell(posX, posY, []);
+		                depth = 0;
+		                gameClearF = checkBombMask();
+		            }
+		        } else if (key.keyL["N"]) {
+		            putFlag(posX, posY);
+		        } else if (key.keyL["Q"]) {
+		            difficulty -= 1;
+		        } else if (key.keyL["E"]) {
+		            difficulty += 1;
+		        } else if (key.keyL["Z"]) {
+		            Debug = (Debug + 1) % 2;
+		        }
+		    }
+		    
+		    posX = Math.max(0, Math.min(maxTile - 1, posX));
+		    posY = Math.max(0, Math.min(maxTile - 1, posY));
+		    difficulty = Math.max(0, Math.min(difTxtList.length - 1, difficulty));
+		    
+		    g.setTimeout(main, 16);
+		}
+
+		changeStage(difficulty);
+		main();
+		</script>
+	</body>
+</html>
